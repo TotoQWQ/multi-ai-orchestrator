@@ -6,7 +6,7 @@
   <img src="https://img.shields.io/badge/stars-%E2%98%85%E2%98%85%E2%98%85%E2%98%85%E2%98%86-brightgreen" alt="Stars">
 </p>
 
-<h1 align="center">🤖 Multi-AI Orchestrator</h1>
+<h1 align="center"> Multi-AI Orchestrator</h1>
 <p align="center"><b>大任务 → 多 AI 分工 → 分阶段协作 → 归纳综合</b></p>
 <p align="center">基于 DeepSeek Flash 的多 AI 协作编排系统，配备初音未来看板娘</p>
 
@@ -18,7 +18,7 @@
 
 ---
 
-## ✨ 特性
+##  特性
 
 | | 特性 | 说明 |
 |---|------|------|
