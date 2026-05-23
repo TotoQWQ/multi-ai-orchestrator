@@ -1,0 +1,796 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Multi-AI Orchestrator</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Noto Sans SC",sans-serif;
+  background:#0b0e14;color:#e2e8f0;min-height:100vh;line-height:1.6;
+}
+::selection{background:#6366f1;color:#fff}
+header{
+  background:linear-gradient(135deg,#0f1119 0%,#1a1d2e 50%,#0f1119 100%);
+  border-bottom:1px solid #1e293b;padding:32px 24px;text-align:center;
+}
+header h1{
+  font-size:1.8rem;font-weight:700;
+  background:linear-gradient(135deg,#818cf8,#a78bfa,#c084fc);
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent;
+}
+header p{margin-top:6px;color:#64748b;font-size:.88rem}
+.container{max-width:880px;margin:0 auto;padding:24px 16px}
+.card{
+  background:linear-gradient(135deg,#131720,#181d2a);
+  border:1px solid #1e293b;border-radius:14px;padding:24px;margin-bottom:20px;
+  box-shadow:0 4px 24px rgba(0,0,0,.3);
+}
+#task-input{
+  width:100%;min-height:110px;padding:14px 16px;
+  background:#0b0e14;border:1px solid #1e293b;border-radius:10px;
+  color:#e2e8f0;font-size:.92rem;font-family:inherit;resize:vertical;
+  transition:border-color .2s;line-height:1.5;
+}
+#task-input:focus{outline:none;border-color:#6366f1;box-shadow:0 0 0 3px rgba(99,102,241,.15)}
+.controls{display:flex;align-items:center;gap:10px;margin-top:14px;flex-wrap:wrap}
+.controls label{font-size:.84rem;color:#64748b}
+.controls select{
+  padding:7px 10px;background:#0b0e14;border:1px solid #1e293b;
+  border-radius:6px;color:#e2e8f0;font-size:.85rem;
+}
+.btn{
+  padding:9px 24px;border:none;border-radius:8px;font-size:.9rem;
+  font-weight:600;cursor:pointer;transition:all .2s;display:inline-flex;
+  align-items:center;gap:6px;font-family:inherit;
+}
+.btn-primary{background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff}
+.btn-primary:hover{transform:translateY(-1px);box-shadow:0 4px 14px rgba(99,102,241,.35)}
+.btn-primary:disabled{opacity:.4;cursor:not-allowed;transform:none;box-shadow:none}
+.btn-ghost{background:#1e293b;color:#94a3b8}
+.btn-ghost:hover{color:#e2e8f0;background:#263244}
+.worker-tags{display:flex;flex-wrap:wrap;gap:6px}
+.worker-tag{
+  padding:4px 12px;border-radius:16px;font-size:.78rem;
+  background:rgba(99,102,241,.12);color:#a5b4fc;border:1px solid rgba(99,102,241,.2);
+}
+/* view toggle */
+.view-toggle{display:flex;gap:4px;background:#0b0e14;border-radius:8px;padding:3px;border:1px solid #1e293b}
+.view-toggle button{
+  padding:5px 14px;border:none;border-radius:6px;font-size:.78rem;cursor:pointer;
+  font-family:inherit;transition:all .15s;background:transparent;color:#64748b;
+}
+.view-toggle button.active{background:#6366f1;color:#fff}
+.view-toggle button:hover:not(.active){color:#e2e8f0}
+/* live log */
+#log-section{display:none}
+.log-header{
+  display:flex;align-items:center;gap:10px;margin-bottom:14px;
+  padding-bottom:12px;border-bottom:1px solid #1e293b;
+}
+.log-header .dot{
+  width:8px;height:8px;border-radius:50%;background:#6366f1;
+  animation:pulse 1.2s ease-in-out infinite;
+}
+@keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.5;transform:scale(1.3)}}
+.log-header .label{font-size:.85rem;color:#94a3b8;flex:1}
+.log-header .round-badge{font-size:.75rem;color:#64748b;background:#1e293b;padding:2px 10px;border-radius:10px}
+#log-container{max-height:500px;overflow-y:auto;padding-right:4px}
+#log-container::-webkit-scrollbar{width:4px}
+#log-container::-webkit-scrollbar-track{background:transparent}
+#log-container::-webkit-scrollbar-thumb{background:#1e293b;border-radius:2px}
+.log-entry{padding:5px 8px;margin-bottom:3px;border-radius:6px;font-size:.82rem;line-height:1.5;animation:fadeIn .25s ease-out}
+@keyframes fadeIn{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:translateY(0)}}
+.log-entry.info{color:#94a3b8}
+.log-entry.highlight{background:rgba(99,102,241,.08);border-left:2px solid #6366f1;color:#c7d2fe}
+.log-entry.worker{background:rgba(16,185,129,.06);border-left:2px solid #10b981;color:#6ee7b7}
+.log-entry.done{background:rgba(250,204,21,.08);border-left:2px solid #facc15;color:#fde68a}
+.log-entry.error{background:rgba(239,68,68,.1);border-left:2px solid #ef4444;color:#fca5a5}
+.log-entry .tag{
+  display:inline-block;padding:1px 7px;border-radius:4px;font-size:.72rem;font-weight:600;margin-right:6px;
+}
+.log-entry.highlight .tag{background:rgba(99,102,241,.2);color:#a5b4fc}
+.log-entry.worker .tag{background:rgba(16,185,129,.2);color:#6ee7b7}
+.log-entry.done .tag{background:rgba(250,204,21,.2);color:#fde68a}
+.log-entry.error .tag{background:rgba(239,68,68,.2);color:#fca5a5}
+.log-entry .ts{color:#475569;font-size:.72rem;margin-right:6px}
+.log-entry.reasoning{color:#64748b;font-style:italic;font-size:.80rem;border-left:2px solid #475569}
+.log-entry.reasoning .tag{background:rgba(100,116,139,.15);color:#94a3b8}
+.log-entry.stream{background:rgba(99,102,241,.04);border-left:2px solid #4f46e5;font-size:.82rem;color:#c7d2fe}
+.log-entry.stream .tag{background:rgba(99,102,241,.15);color:#a5b4fc}
+.log-entry.stream .cursor{display:inline-block;width:2px;height:1em;background:#6366f1;margin-left:2px;animation:blink .8s step-end infinite;vertical-align:text-bottom}
+@keyframes blink{50%{opacity:0}}
+/* ── flowchart ── */
+#flow-section{display:none}
+.flow-header{display:flex;align-items:center;gap:10px;margin-bottom:14px;padding-bottom:12px;border-bottom:1px solid #1e293b}
+.flow-header .label{font-size:.85rem;color:#94a3b8;flex:1}
+#flow-container{min-height:280px;overflow-x:auto;padding:12px 0}
+#flow-container::-webkit-scrollbar{height:4px}
+#flow-container::-webkit-scrollbar-thumb{background:#1e293b;border-radius:2px}
+/* flow graph */
+.flow-graph{display:flex;flex-direction:column;align-items:center;gap:0;padding:0 20px}
+.flow-node{
+  border-radius:10px;padding:10px 18px;font-size:.80rem;font-weight:500;
+  text-align:center;min-width:80px;max-width:260px;
+  border:1.5px solid;position:relative;transition:all .3s;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.flow-node .ico{margin-right:5px}
+.flow-node .meta{font-size:.70rem;font-weight:400;opacity:.7;margin-top:3px}
+.flow-node.type-task{border-color:#6366f1;background:rgba(99,102,241,.12);color:#a5b4fc}
+.flow-node.type-round{border-color:#8b5cf6;background:rgba(139,92,246,.12);color:#c4b5fd}
+.flow-node.type-phase{border-color:#06b6d4;background:rgba(6,182,212,.10);color:#67e8f9}
+.flow-node.type-worker{border-color:#10b981;background:rgba(16,185,129,.10);color:#6ee7b7}
+.flow-node.type-summary{border-color:#f59e0b;background:rgba(245,158,11,.10);color:#fcd34d}
+.flow-node.type-result{border-color:#f97316;background:rgba(249,115,22,.12);color:#fdba74}
+.flow-node.done{opacity:.7}
+.flow-node .status-dot{
+  display:inline-block;width:6px;height:6px;border-radius:50%;margin-left:6px;
+  animation:pulse 1s ease-in-out infinite;vertical-align:middle;
+}
+.flow-node .status-dot.running{background:#10b981}
+.flow-node .status-dot.pending{background:#64748b}
+/* flow arrow */
+.flow-arrow{
+  color:#334155;font-size:.7rem;padding:2px 0;line-height:1;display:flex;align-items:center;justify-content:center;
+}
+.flow-arrow svg{width:20px;height:18px;opacity:.6}
+/* flow row (parallel) */
+.flow-row{
+  display:flex;align-items:center;justify-content:center;gap:10px;
+  position:relative;padding:4px 0;
+}
+.flow-row .flow-node{flex:0 1 auto;min-width:70px}
+.flow-row-bracket{
+  position:absolute;top:-8px;font-size:.65rem;color:#475569;
+}
+.flow-row+.flow-arrow .flow-row-bracket{display:none}
+/* flow branch connector */
+.flow-merge{
+  display:flex;align-items:center;justify-content:center;height:18px;position:relative;
+}
+.flow-merge svg{width:30px;height:18px;opacity:.5}
+/* hr for round separator */
+.flow-round-split{
+  width:60%;height:1px;background:#1e293b;margin:6px 0;
+}
+/* ── result ── */
+#result-section{display:none}
+.result-content{
+  background:#0b0e14;border:1px solid #1e293b;border-radius:10px;
+  padding:20px;font-size:.88rem;line-height:1.7;white-space:pre-wrap;
+  word-break:break-word;color:#e2e8f0;max-height:600px;overflow-y:auto;
+}
+.result-content::-webkit-scrollbar{width:4px}
+.result-content::-webkit-scrollbar-thumb{background:#1e293b;border-radius:2px}
+.result-content h1,.result-content h2,.result-content h3,.result-content h4{margin:.6em 0 .3em;color:#c7d2fe}
+.result-content h1{font-size:1.15rem;border-bottom:1px solid #1e293b;padding-bottom:6px}
+.result-content h2{font-size:1.05rem}.result-content h3{font-size:.95rem}
+.result-content p{margin:.4em 0}
+.result-content ul,.result-content ol{padding-left:20px;margin:.3em 0}
+.result-content li{margin:.15em 0}
+.result-content code{background:#1e293b;padding:1px 6px;border-radius:4px;font-size:.82rem;color:#a5b4fc}
+.result-content pre{background:#0b0e14;border:1px solid #1e293b;border-radius:8px;padding:12px;overflow-x:auto;margin:.5em 0}
+.result-content pre code{background:transparent;padding:0;border-radius:0}
+.result-content blockquote{border-left:3px solid #6366f1;padding:4px 12px;margin:.4em 0;color:#94a3b8;background:rgba(99,102,241,.04);border-radius:0 6px 6px 0}
+.result-content table{border-collapse:collapse;width:100%;margin:.5em 0;font-size:.82rem}
+.result-content th,.result-content td{border:1px solid #1e293b;padding:6px 10px;text-align:left}
+.result-content th{background:#1e293b;color:#c7d2fe}
+.result-content strong{color:#e2e8f0}
+.result-content a{color:#818cf8;text-decoration:none}
+.result-content a:hover{text-decoration:underline}
+.result-content hr{border:none;border-top:1px solid #1e293b;margin:.8em 0}
+/* ── error ── */
+#error-section{display:none}
+.error-box{
+  background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.25);
+  border-radius:8px;padding:14px;color:#fca5a5;font-size:.85rem;
+}
+/* ── history panel ── */
+#history-overlay,#settings-overlay{display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.6);z-index:900}
+#history-panel,#settings-panel{display:none;position:fixed;top:0;right:0;bottom:0;width:400px;max-width:90vw;background:#131720;border-left:1px solid #1e293b;z-index:1000;padding:20px;overflow-y:auto;animation:slideIn .25s ease-out}
+@keyframes slideIn{from{transform:translateX(100%)}to{transform:translateX(0)}}
+#history-panel::-webkit-scrollbar{width:4px}
+#history-panel::-webkit-scrollbar-thumb{background:#1e293b;border-radius:2px}
+.hist-title{font-size:.95rem;font-weight:600;color:#e2e8f0;margin-bottom:16px}
+.hist-item{padding:12px;border-radius:8px;margin-bottom:8px;background:#0b0e14;border:1px solid #1e293b;cursor:pointer;transition:border-color .15s}
+.hist-item:hover{border-color:#6366f1}
+.hist-item .task{font-size:.84rem;color:#e2e8f0;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.hist-item .meta{font-size:.74rem;color:#64748b;margin-top:4px;display:flex;gap:10px}
+.hist-item .meta .badge{display:inline-block;padding:1px 8px;border-radius:4px;font-size:.72rem}
+.hist-item .meta .badge.ok{background:rgba(16,185,129,.15);color:#6ee7b7}
+.hist-item .meta .badge.fail{background:rgba(239,68,68,.15);color:#fca5a5}
+.hist-close{float:right;background:none;border:none;color:#64748b;font-size:1.2rem;cursor:pointer;padding:2px 6px}
+.hist-close:hover{color:#e2e8f0}
+.btn-history{background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);color:#94a3b8;padding:6px 16px;border-radius:8px;font-size:.82rem;cursor:pointer;transition:all .15s;font-family:inherit}
+.btn-history:hover{background:rgba(255,255,255,.1);color:#e2e8f0}
+.hist-detail{padding:12px;background:#0b0e14;border-radius:8px;margin-top:12px;font-size:.82rem;color:#94a3b8;white-space:pre-wrap;max-height:400px;overflow-y:auto}
+.hist-empty{color:#64748b;font-size:.84rem;text-align:center;padding:40px 0}
+.subtask-inline{display:flex;gap:6px;align-items:center;margin:2px 0;color:#94a3b8}
+.subtask-inline .sname{color:#a5b4fc;font-size:.78rem;font-weight:600;background:rgba(99,102,241,.1);padding:1px 8px;border-radius:4px}
+.subtask-inline .sdesc{color:#94a3b8;font-size:.82rem}
+/* ── miku speech bubble ── */
+#miku-bubble{
+  position:fixed;left:110px;bottom:200px;z-index:9999;
+  max-width:220px;padding:8px 14px;background:rgba(16,24,40,.9);
+  border:1px solid rgba(99,102,241,.3);border-radius:12px 12px 12px 2px;
+  font-size:.80rem;color:#c7d2fe;line-height:1.4;
+  backdrop-filter:blur(4px);box-shadow:0 4px 16px rgba(0,0,0,.3);
+  opacity:0;transform:translateY(6px);transition:all .35s ease;
+  pointer-events:none;
+}
+#miku-bubble.show{opacity:1;transform:translateY(0)}
+#miku-bubble .arrow{
+  position:absolute;left:16px;bottom:-6px;
+  width:10px;height:10px;background:rgba(16,24,40,.9);
+  border-right:1px solid rgba(99,102,241,.3);border-bottom:1px solid rgba(99,102,241,.3);
+  transform:rotate(45deg);
+}
+#miku-bubble .cursor{display:inline-block;width:2px;height:1em;background:#6366f1;margin-left:2px;animation:blink .8s step-end infinite;vertical-align:text-bottom}
+
+@media(max-width:600px){
+  header{padding:24px 16px}header h1{font-size:1.3rem}
+  .container{padding:14px 10px}.card{padding:16px}
+}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Multi-AI Orchestrator</h1>
+  <p>decompose · parallel execute · synthesize · iterate</p>
+  <div style="margin-top:10px;display:flex;justify-content:center;gap:8px">
+    <button class="btn-history" onclick="toggleHistory()">&#128214; History</button>
+    <button class="btn-history" onclick="toggleSettings()">&#9881; Keys</button>
+  </div>
+</header>
+
+<div class="container">
+
+  <!-- input -->
+  <div class="card">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:14px;color:#94a3b8;font-size:.85rem;font-weight:600;letter-spacing:.3px">TASK INPUT</div>
+    <textarea id="task-input" placeholder='e.g. "Design a microservice e-commerce backend with order, payment, inventory, and user modules."'></textarea>
+    <div class="controls">
+      <label>rounds</label>
+      <select id="max-rounds">
+        <option value="1">1</option><option value="2">2</option>
+        <option value="3" selected>3</option><option value="5">5</option>
+      </select>
+      <button class="btn btn-primary" id="btn-run" onclick="startRun()">&#9654; Run</button>
+      <button class="btn btn-ghost" id="btn-clear" onclick="clearAll()" style="display:none">Clear</button>
+    </div>
+  </div>
+
+  <!-- workers -->
+  <div class="card" id="workers-card">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:14px;color:#94a3b8;font-size:.85rem;font-weight:600;letter-spacing:.3px">WORKERS ({{ workers|length }})</div>
+    {% if error %}
+    <div style="background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.25);border-radius:8px;padding:12px;color:#fca5a5;font-size:.82rem;margin-bottom:12px">{{ error }}</div>
+    {% endif %}
+    <div class="worker-tags">{% for w in workers %}<span class="worker-tag">{{ w.name }}</span>{% endfor %}</div>
+  </div>
+
+  <!-- log / flow toggle -->
+  <div class="card" id="view-section" style="display:none">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:0">
+      <div class="view-toggle">
+        <button class="active" id="view-log-btn" onclick="switchView('log')">&#128214; Log</button>
+        <button id="view-flow-btn" onclick="switchView('flow')">&#128279; Flow</button>
+      </div>
+      <div id="status-text" style="font-size:.82rem;color:#64748b;flex:1"></div>
+    </div>
+  </div>
+
+  <!-- live log -->
+  <div class="card" id="log-section">
+    <div class="log-header">
+      <div class="dot" id="status-dot"></div>
+      <span class="label" id="status-label">waiting</span>
+      <span class="round-badge" id="round-count"></span>
+    </div>
+    <div id="log-container"></div>
+  </div>
+
+  <!-- flow chart -->
+  <div class="card" id="flow-section">
+    <div class="flow-header">
+      <span class="label">Execution Flow</span>
+    </div>
+    <div id="flow-container"><div style="color:#475569;font-size:.85rem;text-align:center;padding:40px 0">waiting for execution...</div></div>
+  </div>
+
+  <!-- result -->
+  <div class="card" id="result-section">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:14px;color:#a5b4fc;font-size:.85rem;font-weight:600;letter-spacing:.3px">
+      RESULT
+      <button onclick="copyResult()" style="margin-left:auto;background:#1e293b;border:none;border-radius:6px;padding:3px 10px;color:#94a3b8;font-size:.72rem;cursor:pointer;font-family:inherit">&#128203; 复制</button>
+    </div>
+    <div class="result-content" id="result-content"></div>
+
+    <!-- continue ask -->
+    <div id="ask-section" style="margin-top:16px;display:none">
+      <div style="display:flex;gap:8px">
+        <input id="ask-input" type="text" placeholder="继续追问..." style="flex:1;padding:10px 14px;background:#0b0e14;border:1px solid #1e293b;border-radius:8px;color:#e2e8f0;font-size:.85rem;font-family:inherit;outline:none"
+          onkeydown="if(event.key==='Enter')askQuestion()">
+        <button class="btn btn-primary" id="btn-ask" onclick="askQuestion()" style="padding:9px 18px;font-size:.82rem">Ask</button>
+      </div>
+      <div style="display:flex;gap:4px;margin:10px 0 6px;background:#0b0e14;border-radius:6px;padding:2px;width:fit-content">
+        <button class="ask-tab" data-mode="ask" onclick="switchAskMode('ask')" style="padding:4px 12px;border:none;border-radius:4px;font-size:.75rem;cursor:pointer;font-family:inherit;background:#6366f1;color:#fff">Q&A</button>
+        <button class="ask-tab" data-mode="fetch" onclick="switchAskMode('fetch')" style="padding:4px 12px;border:none;border-radius:4px;font-size:.75rem;cursor:pointer;font-family:inherit;background:transparent;color:#64748b">&#128279; 抓取</button>
+      </div>
+      <div id="ask-fetch-area" style="display:none">
+        <div style="display:flex;gap:8px">
+          <input id="fetch-url-input" type="text" placeholder="输入网页 URL..." style="flex:1;padding:10px 14px;background:#0b0e14;border:1px solid #1e293b;border-radius:8px;color:#e2e8f0;font-size:.85rem;font-family:inherit;outline:none"
+            onkeydown="if(event.key==='Enter')fetchUrl()">
+          <button class="btn btn-primary" onclick="fetchUrl()" style="padding:9px 18px;font-size:.82rem">Go</button>
+        </div>
+      </div>
+      <div id="ask-history" style="margin-top:10px"></div>
+    </div>
+  </div>
+
+  <!-- settings panel -->
+  <div id="settings-overlay" onclick="toggleSettings()"></div>
+  <div id="settings-panel">
+    <button class="hist-close" onclick="toggleSettings()">&times;</button>
+    <div class="hist-title">&#9881; API Keys</div>
+    <div style="display:flex;gap:8px;margin-bottom:12px">
+      <input id="key-input" type="password" placeholder="sk-..." style="flex:1;padding:10px 14px;background:#0b0e14;border:1px solid #1e293b;border-radius:8px;color:#e2e8f0;font-size:.85rem;font-family:inherit;outline:none"
+        onkeydown="if(event.key==='Enter')addKey()">
+      <button class="btn btn-primary" onclick="addKey()" style="padding:9px 18px;font-size:.82rem">+ Add</button>
+    </div>
+    <div id="key-list"><div class="hist-empty">no keys, add one</div></div>
+    <div style="margin-top:16px;padding:10px;background:#0b0e14;border-radius:8px;font-size:.78rem;color:#64748b">
+      &#8505; 多个 Key 会自动轮换使用。Key 仅保存在内存中，刷新页面后消失。
+    </div>
+  </div>
+
+  <!-- history panel -->
+  <div id="history-overlay" onclick="toggleHistory()"></div>
+  <div id="history-panel">
+    <button class="hist-close" onclick="toggleHistory()">&times;</button>
+    <div class="hist-title">&#128214; History</div>
+    <div id="history-list"><div class="hist-empty">loading...</div></div>
+  </div>
+
+  <!-- error -->
+  <div class="card" id="error-section">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;color:#fca5a5;font-size:.85rem;font-weight:600">ERROR</div>
+    <div class="error-box" id="error-content"></div>
+  </div>
+
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script>
+// ── helpers ──
+const el=id=>document.getElementById(id);
+const esc=s=>{const d=document.createElement('div');d.textContent=s||'';return d.innerHTML};
+function ts(){return new Date().toLocaleTimeString()}
+let _throttleTimer=null;
+function throttledUpdate(fn,ms=50){if(_throttleTimer)return;_throttleTimer=setTimeout(()=>{_throttleTimer=null;fn()},ms)}
+
+// ── log ──
+function addLog(msg,cls='info',tag=''){
+  const d=document.createElement('div');d.className='log-entry '+cls;
+  d.innerHTML=`<span class="ts">${ts()}</span>${tag?`<span class="tag">${tag}</span>`:''}${msg}`;
+  el('log-container').appendChild(d);d.scrollIntoView({behavior:'smooth',block:'nearest'});
+  return d;
+}
+let _reaEl=null,_strEl=null;
+function resetStream(){_reaEl=null;_strEl=null}
+function updateReasoning(text,full){
+  if(!_reaEl){_reaEl=document.createElement('div');_reaEl.className='log-entry reasoning';
+    _reaEl.innerHTML=`<span class="ts">${ts()}</span><span class="tag">THK</span><span class="rea-text">${esc(text)}</span>`;
+    el('log-container').appendChild(_reaEl);_reaEl.scrollIntoView({behavior:'smooth',block:'nearest'});
+  }else{const s=_reaEl.querySelector('.rea-text');if(s){s.textContent=full;throttledUpdate(()=>_reaEl.scrollIntoView({behavior:'smooth',block:'nearest'}))}}
+}
+function updateStream(text,full){
+  if(!_strEl){_strEl=document.createElement('div');_strEl.className='log-entry stream';
+    _strEl.innerHTML=`<span class="ts">${ts()}</span><span class="tag">RSP</span><span class="str-text">${esc(text)}</span><span class="cursor"></span>`;
+    el('log-container').appendChild(_strEl);_strEl.scrollIntoView({behavior:'smooth',block:'nearest'});
+  }else{const s=_strEl.querySelector('.str-text');if(s){s.textContent=full;throttledUpdate(()=>_strEl.scrollIntoView({behavior:'smooth',block:'nearest'}))}}
+}
+function copyResult(){
+  const text=el('result-content').textContent||'';
+  if(!text)return;
+  navigator.clipboard.writeText(text).then(()=>{
+    const btn=document.querySelector('#result-section button');
+    if(btn){const t=btn.textContent;btn.textContent='&#10003; 已复制';setTimeout(()=>btn.textContent=t,1500)}
+  }).catch(()=>{});
+}
+function setStatus(s){
+  el('status-label').textContent=s;
+  el('status-dot').style.background=s.startsWith('error')||s.startsWith('fail')?'#ef4444':s==='done'?'#10b981':'#6366f1';
+}
+
+// ── view toggle ──
+function switchView(v){
+  document.querySelectorAll('.view-toggle button').forEach(b=>b.classList.remove('active'));
+  el('view-log-btn').classList.toggle('active',v==='log');
+  el('view-flow-btn').classList.toggle('active',v==='flow');
+  el('log-section').style.display=v==='log'?'block':'none';
+  el('flow-section').style.display=v==='flow'?'block':'none';
+  if(v==='flow')renderFlow();
+}
+
+// ── FLOWCHART ──
+let flowGraph=[]; // [{type, label, meta, parallel}]
+let flowDirty=true;
+
+function flowAdd(type,label,meta,parallel){
+  flowGraph.push({type,label,meta,parallel:!!parallel});
+  flowDirty=true;
+}
+function flowFinalize(label){
+  flowGraph.push({type:'result',label,meta:'',parallel:false});
+  flowDirty=true;
+}
+function flowClear(){flowGraph=[];flowDirty=true}
+function flowSetLastMeta(meta){
+  if(flowGraph.length>0)flowGraph[flowGraph.length-1].meta=meta;
+}
+
+function renderFlow(){
+  if(flowGraph.length===0){
+    el('flow-container').innerHTML='<div style="color:#475569;font-size:.85rem;text-align:center;padding:40px 0">waiting for execution...</div>';
+    return;
+  }
+  const c=el('flow-container');c.innerHTML='';
+  const g=document.createElement('div');g.className='flow-graph';c.appendChild(g);
+
+  let i=0;
+  while(i<flowGraph.length){
+    const node=flowGraph[i];
+    // round separator
+    if(i>0 && node.type==='round' && flowGraph[i-1].type!=='round'){
+      const hr=document.createElement('div');hr.className='flow-round-split';g.appendChild(hr);
+    }
+    // parallel group
+    if(node.parallel || (i+1<flowGraph.length && flowGraph[i+1].parallel && node.type!=='result')){
+      const row=document.createElement('div');row.className='flow-row';
+      // collect all parallel nodes
+      let j=i;
+      while(j<flowGraph.length && (flowGraph[j].parallel || j===i)){
+        row.appendChild(createFlowNode(flowGraph[j]));
+        if(j+1<flowGraph.length && flowGraph[j+1].parallel)j++;
+        else break;
+      }
+      g.appendChild(row);
+      i=j+1;
+    }else{
+      g.appendChild(createFlowNode(node));
+      i++;
+    }
+    // arrow after each item
+    if(i<flowGraph.length){
+      const arr=document.createElement('div');arr.className='flow-arrow';
+      arr.innerHTML='<svg viewBox="0 0 20 18"><path d="M10 2v12M4 9l6 6 6-6" stroke="#334155" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+      g.appendChild(arr);
+    }
+  }
+}
+
+function createFlowNode(node){
+  const d=document.createElement('div');d.className='flow-node type-'+node.type;
+  const icons={task:'📋',round:'🧠',phase:'⚙',worker:'⚡',summary:'📊',result:'🏁'};
+  d.innerHTML=`<span class="ico">${icons[node.type]||'•'}</span>${esc(node.label)}
+    ${node.meta?`<div class="meta">${esc(node.meta)}</div>`:''}`;
+  return d;
+}
+
+// ── SSE stream ──
+let evtSource=null,currentTaskId=null;
+
+function connectSSE(taskId){
+  if(evtSource)evtSource.close();
+  currentTaskId=taskId;resetStream();flowClear();
+  evtSource=new EventSource(`/api/stream/${taskId}`);
+
+  evtSource.addEventListener('phase',e=>{
+    const d=JSON.parse(e.data);const ph=d.phase,st=d.status;
+    resetStream();
+    if(st==='start'){
+      if(ph==='decompose'){addLog('analyzing & decomposing...','highlight','DEC');setStatus('decompose')
+        flowAdd('phase','Decompose')}
+      else if(ph==='execute'){addLog(`running workers...`,'info','RUN');setStatus('execute')}
+      else if(ph==='summarize'){addLog('synthesizing...','highlight','SUM');setStatus('summarize')
+        flowAdd('summary','Synthesize')}
+      else if(ph==='final_synthesis'){addLog('final report...','highlight','FIN');setStatus('finalize')}
+    }else if(st==='done'){
+      if(ph==='decompose' && d.subtasks){
+        addLog(`analysis: ${d.analysis||''}`,'info');
+        d.subtasks.forEach(st=>{
+          addLog(`[P${st.phase}] ${st.worker}: ${st.description}`,'info');
+        });
+        addLog(`decomposed into ${d.subtasks.length}`,'done','OK');
+      }else if(ph==='execute'){
+        addLog('all workers done','done','OK');
+      }else if(ph==='summarize'){
+        if(d.summary)addLog(`summary: ${d.summary.slice(0,280)}${d.summary.length>280?'...':''}`,'info');
+        if(d.findings)addLog(`findings: ${d.findings.join('; ')}`,'info');
+        setStatus(d.is_final?'done':'in_progress');
+      }
+    }
+    if(el('flow-section').style.display==='block')renderFlow();
+  });
+
+  evtSource.addEventListener('execute_phase',e=>{
+    const d=JSON.parse(e.data);
+    addLog(`[Phase ${d.phase_num}] ${d.workers.join(', ')}`,'highlight',`P${d.phase_num}`);
+    // add phase & workers to flow
+    flowAdd('phase',`Phase ${d.phase_num}`,`${d.workers.length} workers`);
+    d.workers.forEach(w=>flowAdd('worker',w,'',true));
+    if(el('flow-section').style.display==='block')renderFlow();
+  });
+
+  evtSource.addEventListener('worker_start',e=>{
+    const d=JSON.parse(e.data);
+    addLog(`[${esc(d.worker)}] working...`,'worker',d.worker.slice(0,4));
+  });
+  evtSource.addEventListener('worker_done',e=>{
+    const d=JSON.parse(e.data);_strEl=null;
+    addLog(`[${esc(d.worker)}] complete`,'done','OK');
+  });
+
+  evtSource.addEventListener('round_start',e=>{
+    const d=JSON.parse(e.data);resetStream();
+    addLog(`--- Round ${d.round} ---`,'highlight',`R${d.round}`);
+    flowAdd('round',`Round ${d.round}`);
+    if(el('flow-section').style.display==='block')renderFlow();
+  });
+
+  evtSource.addEventListener('round_done',e=>{resetStream();el('round-count').textContent=`round ${JSON.parse(e.data).round}`});
+
+  evtSource.addEventListener('reasoning',e=>{const d=JSON.parse(e.data);updateReasoning(d.text||'',d.full||'')});
+  evtSource.addEventListener('token',e=>{const d=JSON.parse(e.data);updateStream(d.text||'',d.full||'')});
+
+  // 看板娘话术
+  evtSource.addEventListener('talk',e=>{
+    const d=JSON.parse(e.data);const talk=el('miku-talk');
+    if(talk&&d.text){talk.textContent=d.text;
+      const b=el('miku-bubble');b.classList.add('show');
+      clearTimeout(b._t);b._t=setTimeout(()=>b.classList.remove('show'),6000)}
+  });
+
+  evtSource.addEventListener('done',e=>{
+    const d=JSON.parse(e.data);resetStream();setStatus('done');
+    addLog('finished!','done','DONE');
+    flowFinalize(d.result?'Complete':'Done');
+    if(el('flow-section').style.display==='block')renderFlow();
+    evtSource.close();evtSource=null;
+    el('result-content').innerHTML=d.result?marked.parse(d.result):'';
+    el('result-section').style.display='block';
+    el('ask-section').style.display='block';el('ask-input').focus();
+    el('btn-run').disabled=false;el('btn-run').innerHTML='&#9654; Run';
+    el('btn-clear').style.display='inline-flex';
+    el('status-dot').style.animation='none';
+  });
+
+  evtSource.addEventListener('error',e=>{
+    const d=JSON.parse(e.data);resetStream();
+    addLog(esc(d.message||'unknown error'),'error','ERR');
+    setStatus('failed');
+    el('error-content').textContent=d.message||'Unknown error';
+    el('error-section').style.display='block';
+    el('btn-run').disabled=false;el('btn-run').innerHTML='&#9654; Run';
+    el('btn-clear').style.display='inline-flex';
+    if(evtSource){evtSource.close();evtSource=null}
+  });
+
+  evtSource.onerror=()=>{if(evtSource&&evtSource.readyState===2){addLog('connection closed','info');el('btn-run').disabled=false;el('btn-run').innerHTML='&#9654; Run'}};
+}
+
+// ── actions ──
+async function startRun(){
+  const task=el('task-input').value.trim();
+  if(!task){alert('Please enter a task');return}
+  const rounds=parseInt(el('max-rounds').value);
+  clearAll();
+  const btn=el('btn-run');btn.disabled=true;btn.innerHTML='&#8987; Running';
+  setStatus('connecting');
+  
+  // store task for flow
+  flowClear();flowAdd('task',task.slice(0,40)+(task.length>40?'...':''));
+  
+  el('view-section').style.display='block';
+  switchView('log');
+  el('log-section').style.display='block';
+  addLog(`task: ${task.slice(0,120)}${task.length>120?'...':''}`,'info','TASK');
+
+  try{
+    const resp=await fetch('/api/run',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({task,max_rounds:rounds}),
+    });
+    const data=await resp.json();
+    if(data.error){addLog(data.error,'error','ERR');el('error-content').textContent=data.error;
+      el('error-section').style.display='block';btn.disabled=false;btn.innerHTML='&#9654; Run';return}
+    connectSSE(data.task_id);
+  }catch(e){addLog('network error: '+e.message,'error','ERR');el('error-content').textContent='Network error: '+e.message;
+    el('error-section').style.display='block';btn.disabled=false;btn.innerHTML='&#9654; Run'}
+}
+
+function clearAll(){
+  if(evtSource){evtSource.close();evtSource=null}
+  currentTaskId=null;resetStream();flowClear();
+  el('miku-bubble').classList.remove('show');el('miku-talk').textContent='';
+  el('log-container').innerHTML='';
+  el('log-section').style.display='none';
+  el('flow-section').style.display='none';
+  el('view-section').style.display='none';
+  el('result-section').style.display='none';
+  el('error-section').style.display='none';
+  el('result-content').textContent='';el('error-content').textContent='';el('round-count').textContent='';
+  el('ask-section').style.display='none';el('ask-history').innerHTML='';el('ask-input').value='';el('fetch-url-input').value='';
+  el('btn-clear').style.display='none';
+  el('btn-run').disabled=false;el('btn-run').innerHTML='&#9654; Run';
+  setStatus('waiting');el('status-dot').style.animation='pulse 1.2s ease-in-out infinite';
+}
+
+// ── ask mode toggle ──
+function switchAskMode(mode){
+  document.querySelectorAll('.ask-tab').forEach(b=>{
+    b.style.background='transparent';b.style.color='#64748b'
+  });
+  const btn=document.querySelector(`.ask-tab[data-mode="${mode}"]`);
+  if(btn){btn.style.background='#6366f1';btn.style.color='#fff'}
+  el('ask-input').parentElement.style.display=mode==='ask'?'flex':'none';
+  el('ask-fetch-area').style.display=mode==='fetch'?'block':'none';
+}
+// ── fetch URL ──
+async function fetchUrl(){
+  const input=el('fetch-url-input');const url=input.value.trim();
+  if(!url||!currentTaskId)return;
+  input.value='';const hist=el('ask-history');
+  const qDiv=document.createElement('div');
+  qDiv.style.cssText='padding:8px 12px;margin-bottom:6px;background:rgba(250,204,21,.08);border-radius:8px;font-size:.82rem;color:#fde68a';
+  qDiv.textContent=url;hist.appendChild(qDiv);
+  const aDiv=document.createElement('div');
+  aDiv.style.cssText='padding:8px 12px;margin-bottom:10px;background:rgba(16,185,129,.06);border-radius:8px;font-size:.82rem;color:#94a3b8;white-space:pre-wrap';
+  aDiv.textContent='fetching...';hist.appendChild(aDiv);
+  try{
+    const r=await fetch('/api/fetch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url})});
+    const d=await r.json();
+    aDiv.textContent=d.analysis||d.error||'error';
+  }catch(e){aDiv.textContent='network error'}
+}
+
+// ── ask (继续提问) ──
+async function askQuestion(){
+  const input=el('ask-input');const q=input.value.trim();
+  if(!q||!currentTaskId)return;
+  input.value='';const btn=el('btn-ask');btn.disabled=true;btn.textContent='...';
+  const hist=el('ask-history');
+  const qDiv=document.createElement('div');
+  qDiv.style.cssText='padding:8px 12px;margin-bottom:6px;background:rgba(99,102,241,.08);border-radius:8px;font-size:.82rem;color:#a5b4fc';
+  qDiv.textContent='Q: '+q;
+  hist.appendChild(qDiv);
+  const aDiv=document.createElement('div');
+  aDiv.style.cssText='padding:8px 12px;margin-bottom:10px;background:rgba(16,185,129,.06);border-radius:8px;font-size:.82rem;color:#94a3b8;white-space:pre-wrap';
+  aDiv.textContent='...';hist.appendChild(aDiv);
+  aDiv.scrollIntoView({behavior:'smooth'});
+  try{
+    const r=await fetch('/api/ask',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({task_id:currentTaskId,question:q})});
+    const d=await r.json();
+    aDiv.textContent=d.answer||'error: '+(d.error||'unknown');
+  }catch(e){aDiv.textContent='network error'}
+  finally{btn.disabled=false;btn.textContent='Ask';input.focus()}
+}
+
+// ── settings (API Key management) ──
+let settingsOpen=false;
+function toggleSettings(){
+  settingsOpen=!settingsOpen;
+  el('settings-overlay').style.display=settingsOpen?'block':'none';
+  el('settings-panel').style.display=settingsOpen?'block':'none';
+  if(settingsOpen)refreshKeys();
+}
+async function refreshKeys(){
+  const list=el('key-list');
+  try{
+    const r=await fetch('/api/keys');const d=await r.json();
+    if(!d.count){list.innerHTML='<div class="hist-empty">no keys, add one</div>';return}
+    list.innerHTML=d.keys.map(k=>
+      `<div style="display:flex;align-items:center;gap:8px;padding:8px 10px;margin-bottom:6px;background:#0b0e14;border-radius:6px;font-size:.82rem">
+        <span style="flex:1;color:#94a3b8;font-family:monospace">${k.masked}</span>
+        <span style="color:#475569;font-size:.72rem">${k.len} chars</span>
+        <button onclick="removeKey(${k.index})" style="background:rgba(239,68,68,.15);border:none;border-radius:4px;color:#fca5a5;padding:2px 8px;cursor:pointer;font-size:.72rem">Del</button>
+      </div>`
+    ).join('');
+  }catch(e){list.innerHTML='<div class="hist-empty">load failed</div>'}
+}
+async function addKey(){
+  const input=el('key-input');const key=input.value.trim();
+  if(!key)return;
+  const r=await fetch('/api/keys',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key})});
+  const d=await r.json();
+  if(d.error){alert(d.error);return}
+  input.value='';refreshKeys();
+}
+async function removeKey(index){
+  const r=await fetch(`/api/keys/${index}`,{method:'DELETE'});
+  const d=await r.json();
+  refreshKeys();
+}
+
+// ── history ──
+let historyOpen=false;
+async function toggleHistory(){
+  historyOpen=!historyOpen;
+  el('history-overlay').style.display=historyOpen?'block':'none';
+  el('history-panel').style.display=historyOpen?'block':'none';
+  if(historyOpen)await loadHistory();
+}
+async function loadHistory(){
+  const list=el('history-list');list.innerHTML='<div class="hist-empty">loading...</div>';
+  try{
+    const resp=await fetch('/api/history');const items=await resp.json();
+    if(!items.length){list.innerHTML='<div class="hist-empty">no history yet</div>';return}
+    list.innerHTML=items.map(h=>{
+      const bc=h.status==='completed'?'ok':'fail';
+      const d=h.created_at?h.created_at.slice(0,19).replace('T',' '):'';
+      return `<div class="hist-item" onclick="viewHistory('${h.task_id}')">
+        <div class="task">${esc(h.task)}</div>
+        <div class="meta"><span class="badge ${bc}">${h.status}</span><span>${d}</span><span>${h.rounds} rounds</span></div></div>`;
+    }).join('');
+  }catch(e){list.innerHTML='<div class="hist-empty">load failed</div>'}
+}
+async function viewHistory(id){
+  try{
+    const resp=await fetch(`/api/history/${id}`);const d=await resp.json();
+    if(d.error)return;
+    const detail=document.createElement('div');detail.className='hist-detail';
+    detail.textContent=d.final_result||d.error||'(empty)';
+    const old=document.querySelector('.hist-detail');if(old)old.remove();
+    document.querySelector(`.hist-item[onclick*="'${id}'"]`).after(detail);
+  }catch(e){}
+}
+</script>
+
+<!-- 初音未来对话气泡 -->
+<div id="miku-bubble"><span id="miku-talk"></span><span class="cursor"></span><div class="arrow"></div></div>
+
+<!-- 看板娘：初音未来（Live2D） -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/live2d-widget@3.0.4/lib/L2Dwidget.min.css" media="print" onload="this.media='all'" />
+<script defer src="https://cdn.jsdelivr.net/npm/live2d-widget@3.0.4/lib/L2Dwidget.min.js"></script>
+<script>
+document.addEventListener('DOMContentLoaded',function(){
+  function initMiku(){
+    try{
+      L2Dwidget.init({
+        model:{
+          jsonPath:'https://cdn.jsdelivr.net/npm/live2d-widget-model-miku@latest/assets/miku.model.json',
+          scale:1,
+        },
+        display:{
+          superSample:2,
+          position:'left',
+          width:110,height:220,
+          hOffset:-10,vOffset:-10,
+        },
+        mobile:{show:false},
+        react:{opacityDefault:0.6,opacityOnHover:0.9},
+        dialog:{
+          enable:true,
+          script:{
+            'tap body':'笑う?',
+            'tap face':'こんにちは！',
+            'hover .btn-primary':'頑張って！',
+            'hover #task-input':'何をお願いするの？',
+          }
+        }
+      });
+    }catch(e){}
+  }
+  if(typeof L2Dwidget!=='undefined'){initMiku();return}
+  var t=setInterval(function(){
+    if(typeof L2Dwidget!=='undefined'){clearInterval(t);initMiku()}
+  },500);
+  setTimeout(function(){clearInterval(t)},10000);
+});
+</script>
+</body>
+</html>
