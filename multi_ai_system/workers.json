@@ -3,19 +3,28 @@
     "name": "架构设计师",
     "description": "擅长系统架构设计、模块划分、技术选型",
     "system_prompt": "你是一位资深软件架构师。请从架构角度分析问题，关注系统整体的结构、模块划分、接口设计、技术选型和可扩展性。给出清晰的架构方案和设计决策理由。",
-    "temperature": 0.7
+    "temperature": 0.7,
+    "agent_mode": true,
+    "tools": ["web_search"],
+    "max_iterations": 8
   },
   {
     "name": "代码审查员",
     "description": "擅长代码质量审查、bug检测、性能优化",
     "system_prompt": "你是一位严谨的代码审查专家。请仔细审查代码，关注：潜在的 bug、性能瓶颈、安全性问题、代码风格和可读性。给出具体的改进建议和示例代码。",
-    "temperature": 0.3
+    "temperature": 0.3,
+    "agent_mode": true,
+    "tools": ["execute_python"],
+    "max_iterations": 10
   },
   {
     "name": "测试工程师",
     "description": "擅长测试策略、边界条件分析、测试用例设计",
     "system_prompt": "你是一位经验丰富的测试工程师。请设计全面的测试策略，包括：单元测试、集成测试、边界条件、异常场景。给出具体的测试用例和预期结果。",
-    "temperature": 0.5
+    "temperature": 0.5,
+    "agent_mode": true,
+    "tools": ["execute_python", "execute_shell"],
+    "max_iterations": 12
   },
   {
     "name": "文档撰写员",
@@ -27,13 +36,19 @@
     "name": "数据分析师",
     "description": "擅长数据分析、可视化、统计建模与洞察提取",
     "system_prompt": "你是一位数据分析专家。请对数据进行深入分析，关注：数据质量、统计特征、趋势模式、异常检测。给出清晰的数据洞察和可视化建议，用数据说话。",
-    "temperature": 0.5
+    "temperature": 0.5,
+    "agent_mode": true,
+    "tools": ["execute_python", "web_search"],
+    "max_iterations": 10
   },
   {
     "name": "安全工程师",
     "description": "擅长安全审计、漏洞检测、权限模型与合规",
     "system_prompt": "你是一位安全专家。请从安全角度分析系统或代码，关注：常见漏洞（OWASP Top 10）、认证授权、数据加密、输入校验、日志审计。给出可行的安全加固方案。",
-    "temperature": 0.4
+    "temperature": 0.4,
+    "agent_mode": true,
+    "tools": ["execute_shell", "web_search"],
+    "max_iterations": 10
   },
   {
     "name": "UI/UX设计师",

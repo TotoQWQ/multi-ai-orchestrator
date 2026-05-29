@@ -54,6 +54,9 @@ def load_workers(workers_path: str) -> list[WorkerConfig]:
             description=item.get("description", ""),
             system_prompt=item.get("system_prompt", "你是一个有用的AI助手。"),
             temperature=float(item.get("temperature", 0.7)),
+            agent_mode=item.get("agent_mode", False),
+            tools=item.get("tools", []),
+            max_iterations=int(item.get("max_iterations", 10)),
         ))
 
     if not workers:
@@ -107,7 +110,8 @@ def print_banner():
 ╔══════════════════════════════════════════════╗
 ║        🤖 多AI协作编排系统 (Multi-AI)         ║
 ║        基于 DeepSeek Flash 模型               ║
-║   大任务 → 多AI分工 → 并行执行 → 归纳综合     ║
+║   📋 AI规划工作流 → 🤝 多AI执行 → ✅ 质量评估  ║
+║          效果不好 → 修正工作流 → 再执行       ║
 ╚══════════════════════════════════════════════╝
 """
     print(banner)
@@ -117,17 +121,19 @@ def print_help():
     print("可用命令：")
     print("  /quit    退出程序")
     print("  /workers 查看当前专职AI列表")
-    print("  /rounds N  设置最大轮数（默认 3）")
+    print("  /rounds N  设置最大规划迭代次数（默认 3）")
     print("  /help    显示此帮助")
     print()
 
 
 def print_workers(workers: list[WorkerConfig]):
     print(f"\n当前专职AI助手 ({len(workers)} 个)：")
-    print(f"  {'名称':<12} {'专长描述'}")
-    print(f"  {'────':<12} {'────────'}")
+    print(f"  {'名称':<12} {'模式':<6} {'工具':<40} {'专长描述'}")
+    print(f"  {'────':<12} {'──':<6} {'────────':<40} {'────────'}")
     for w in workers:
-        print(f"  {w.name:<12} {w.description}")
+        mode = "🤖Agent" if w.agent_mode else "普通"
+        tools_str = ", ".join(w.tools[:3]) if w.tools else "—"
+        print(f"  {w.name:<12} {mode:<6} {tools_str:<40} {w.description}")
     print()
 
 

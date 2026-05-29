@@ -172,6 +172,9 @@ def get_orchestrator() -> MultiAIOrchestrator:
                 description=item.get("description", ""),
                 system_prompt=item.get("system_prompt", ""),
                 temperature=float(item.get("temperature", 0.7)),
+                agent_mode=item.get("agent_mode", False),
+                tools=item.get("tools", []),
+                max_iterations=int(item.get("max_iterations", 10)),
             )
             for i, item in enumerate(data)
         ]
@@ -179,11 +182,14 @@ def get_orchestrator() -> MultiAIOrchestrator:
         # 默认配置
         workers = [
             WorkerConfig(name="架构设计师", description="系统架构设计、模块划分、技术选型",
-                         system_prompt="你是一位资深软件架构师。请从架构角度分析问题，关注系统整体的结构、模块划分、接口设计、技术选型和可扩展性。"),
+                         system_prompt="你是一位资深软件架构师。请从架构角度分析问题，关注系统整体的结构、模块划分、接口设计、技术选型和可扩展性。",
+                         agent_mode=True, tools=["web_search"], max_iterations=8),
             WorkerConfig(name="代码审查员", description="代码质量审查、bug检测、性能优化",
-                         system_prompt="你是一位严谨的代码审查专家。请仔细审查代码，关注：潜在的 bug、性能瓶颈、安全性问题、代码风格和可读性。"),
+                         system_prompt="你是一位严谨的代码审查专家。请仔细审查代码，关注：潜在的 bug、性能瓶颈、安全性问题、代码风格和可读性。",
+                         agent_mode=True, tools=["execute_python"], max_iterations=10),
             WorkerConfig(name="测试工程师", description="测试策略、边界条件分析、测试用例设计",
-                         system_prompt="你是一位经验丰富的测试工程师。请设计全面的测试策略，包括：单元测试、集成测试、边界条件、异常场景。"),
+                         system_prompt="你是一位经验丰富的测试工程师。请设计全面的测试策略，包括：单元测试、集成测试、边界条件、异常场景。",
+                         agent_mode=True, tools=["execute_python", "execute_shell"], max_iterations=12),
             WorkerConfig(name="文档撰写员", description="技术文档、API文档、用户手册编写",
                          system_prompt="你是一位技术文档专家。请以清晰、准确、易懂的方式撰写文档。关注：文档结构、术语统一、示例完整。"),
         ]
@@ -305,11 +311,17 @@ async def stream_task(task_id: str):
 
 @app.get("/api/workers")
 async def get_workers_info():
-    """获取专职AI助手列表"""
+    """获取专职AI助手列表（含 Agent 能力）"""
     try:
         orc = get_orchestrator()
         return [
-            {"name": w.name, "description": w.description}
+            {
+                "name": w.name,
+                "description": w.description,
+                "agent_mode": w.agent_mode,
+                "tools": w.tools,
+                "max_iterations": w.max_iterations,
+            }
             for w in orc.workers
         ]
     except Exception as e:
@@ -490,14 +502,19 @@ async def _run_orchestrator(task_id: str, task: str, max_rounds: int):
             if event_type == "phase":
                 ph = data.get("phase", "")
                 st = data.get("status", "")
-                if st == "start":
+                if st == "start" and ph in ("plan", "decompose"):
                     asyncio.create_task(_push_talk(ph, {"phase": ph}))
-                elif st == "done" and ph == "decompose":
-                    subs = data.get("subtasks", [])
-                    asyncio.create_task(_push_talk("decompose_done", {"subtasks": len(subs)}))
-                elif st == "done" and ph == "summarize":
-                    finds = data.get("findings", [])
-                    asyncio.create_task(_push_talk("summarize_done", {"findings": len(finds), "is_final": data.get("is_final")}))
+            elif event_type == "plan_start":
+                asyncio.create_task(_push_talk("plan", {"phase": "plan"}))
+            elif event_type == "plan_done":
+                total = data.get("total_steps", 0)
+                asyncio.create_task(_push_talk("plan_done", {"subtasks": total}))
+            elif event_type == "evaluate_start":
+                asyncio.create_task(_push_talk("evaluate", {"phase": "evaluate"}))
+            elif event_type == "evaluate_done":
+                score = data.get("score", 0)
+                ok = data.get("is_satisfactory", False)
+                asyncio.create_task(_push_talk("evaluate_done", {"score": score, "is_satisfactory": ok}))
             elif event_type == "execute_phase":
                 asyncio.create_task(_push_talk("execute", {
                     "phase": data.get("phase_num"), "total_phases": data.get("total"),
@@ -511,25 +528,35 @@ async def _run_orchestrator(task_id: str, task: str, max_rounds: int):
                 asyncio.create_task(_push_talk("error", {"msg": (data.get("message", "") or "")[:20]}))
 
         # 轮次完成回调 —— 将详细数据存入全局状态供轮询用
-        def on_round(round_num, decomposition, round_result, summary):
-            subtasks_info = [
-                {"worker": st.worker, "description": st.description, "phase": st.phase, "depends_on": st.depends_on}
-                for st in decomposition.subtasks
-            ]
+        # 新签名: (iteration, workflow, results, evaluation)
+        def on_round(iteration, workflow, results, evaluation):
+            subtasks_info = []
+            for phase_num in sorted(workflow.phases.keys()):
+                for st in workflow.phases[phase_num]:
+                    subtasks_info.append({
+                        "step_id": st.step_id,
+                        "worker": st.worker,
+                        "description": st.description,
+                        "phase": st.phase,
+                        "expected_output": st.expected_output,
+                    })
+
             worker_results = {}
-            for name, content in round_result.subtask_results.items():
-                worker_results[name] = content[:5000] if len(content) > 5000 else content
+            for step_id, content in results.items():
+                worker_results[step_id] = content[:5000] if len(content) > 5000 else content
 
             round_data = {
-                "round_num": round_num,
-                "analysis": decomposition.analysis,
+                "round_num": iteration,
+                "mode": "plan_first",
+                "analysis": workflow.analysis,
                 "subtasks": subtasks_info,
                 "worker_results": worker_results,
-                "summary": summary.summary,
-                "key_findings": summary.key_findings,
-                "inconsistencies": summary.inconsistencies,
-                "is_final": summary.is_final,
-                "final_answer": summary.final_answer,
+                "score": evaluation.score,
+                "is_satisfactory": evaluation.is_satisfactory,
+                "issues": evaluation.issues,
+                "suggestions": evaluation.suggestions,
+                "final_answer": evaluation.final_answer,
+                "agent_steps": {},  # agent_steps_map 不在此回调中
             }
             tasks_store[task_id]["rounds"].append(round_data)
             tasks_store[task_id]["total_subtasks"] = len(subtasks_info)

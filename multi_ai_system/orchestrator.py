@@ -21,6 +21,21 @@ from dataclasses import dataclass, field
 from typing import Optional
 import httpx
 
+# Agent 功能（可选依赖，不影响原有逻辑）
+try:
+    from agent import AgentLoop, AgentResult
+    from tools import get_tool_registry
+    _AGENT_AVAILABLE = True
+except ImportError:
+    _AGENT_AVAILABLE = False
+
+# 工作流规划器
+try:
+    from planner import WorkflowPlanner, Workflow, WorkflowStep, WorkflowEvaluation, PlanRoundResult
+    _PLANNER_AVAILABLE = True
+except ImportError:
+    _PLANNER_AVAILABLE = False
+
 # ---------------------------------------------------------------------------
 # 数据模型
 # ---------------------------------------------------------------------------
@@ -32,6 +47,9 @@ class WorkerConfig:
     description: str          # 简短描述，给 Orchestrator 用来分配任务
     system_prompt: str        # 系统提示词，定义该助手的专长和行为
     temperature: float = 0.7
+    agent_mode: bool = False  # 是否启用 Agent 模式（支持工具调用）
+    tools: list[str] = field(default_factory=list)   # Agent 模式下可用的工具列表
+    max_iterations: int = 10  # Agent 最大迭代次数
 
 
 @dataclass
@@ -40,7 +58,8 @@ class SubTask:
     worker: str               # 分配给哪个助手（name）
     description: str          # 任务描述
     phase: int = 0            # 执行阶段：同 phase 并行，不同 phase 串行
-    depends_on: list[str] | None = None  # 依赖的 worker 列表，仅看到这些 worker 的输出
+    depends_on: list[str] | None = None  # 依赖的 worker/step_id 列表
+    step_id: str = ""         # 工作流步骤 ID（同一 Worker 可多次出现，用 step_id 区分）
 
 
 @dataclass
@@ -57,6 +76,7 @@ class RoundResult:
     subtask_results: dict[str, str]          # worker_name -> 输出文本
     subtask_details: list[tuple[str, str, int]]   # (worker_name, description, phase)
     phase_count: int = 1                     # 本轮有多少个阶段
+    agent_steps: dict[str, list[dict]] = field(default_factory=dict)  # worker_name -> agent 步骤列表
 
 
 @dataclass
@@ -350,18 +370,22 @@ final_answer 请用 Markdown 组织：标题 ##、列表 -、代码块 ```、加
         except Exception as e:
             return f"[抓取失败] {e}"
 
-    async def _execute_one(self, subtask: SubTask, context: str = "") -> tuple[str, str]:
-        """执行单个子任务，可附带前序阶段的上下文。自动抓取描述中的 URL"""
+    async def _execute_one(self, subtask: SubTask, context: str = "") -> tuple[str, str, list[dict]]:
+        """
+        执行单个子任务，可附带前序阶段的上下文。自动抓取描述中的 URL。
+        返回 (worker_name, result_text, agent_steps)
+        """
         async with self._semaphore:
             worker = self.workers_map.get(subtask.worker)
             if not worker:
                 return (
                     subtask.worker,
                     f"[错误] 找不到名为 '{subtask.worker}' 的助手。可用：{list(self.workers_map.keys())}",
+                    [],
                 )
 
             if self._on_event:
-                self._on_event("worker_start", {"worker": subtask.worker, "description": subtask.description[:120], "phase": subtask.phase})
+                self._on_event("worker_start", {"worker": subtask.worker, "description": subtask.description[:120], "phase": subtask.phase, "agent_mode": worker.agent_mode})
 
             full_prompt = subtask.description
 
@@ -379,6 +403,50 @@ final_answer 请用 Markdown 组织：标题 ##、列表 -、代码块 ```、加
             if fetched:
                 full_prompt += f"\n\n[自动抓取的网页内容 — 供你分析参考]\n" + "\n\n---\n\n".join(fetched)
 
+            # ── Agent 模式 ──
+            if worker.agent_mode and _AGENT_AVAILABLE:
+                agent_steps: list[dict] = []
+
+                def _on_agent_event(event_type: str, data: dict):
+                    """捕获 Agent 内部事件，转发给 Orchestrator 的 SSE"""
+                    if self._on_event:
+                        self._on_event("agent_" + event_type, dict(data, worker=subtask.worker))
+                    if event_type in ("tool_call", "tool_result", "agent_final"):
+                        agent_steps.append(dict(data, type=event_type))
+
+                loop = AgentLoop(
+                    client=self.client,
+                    system_prompt=worker.system_prompt,
+                    tools=worker.tools if worker.tools else None,
+                    max_iterations=worker.max_iterations,
+                    on_event=_on_agent_event,
+                )
+                agent_result = await loop.run(
+                    task=f"== Execute ==\n{full_prompt}",
+                    temperature=worker.temperature,
+                )
+
+                # 将 agent steps 转为可序列化的格式
+                serializable_steps = []
+                for s in agent_result.steps:
+                    serializable_steps.append({
+                        "step_num": s.step_num,
+                        "tool_name": s.tool_name,
+                        "tool_args": s.tool_args,
+                        "tool_result": s.tool_result[:500],
+                        "content": s.content[:500],
+                    })
+
+                if self._on_event:
+                    self._on_event("worker_done", {
+                        "worker": subtask.worker,
+                        "phase": subtask.phase,
+                        "summary": agent_result.final_answer[:200],
+                        "agent_steps_count": len(agent_result.steps),
+                    })
+                return subtask.worker, agent_result.final_answer, serializable_steps
+
+            # ── 普通模式（原有逻辑） ──
             messages = [
                 {"role": "system", "content": worker.system_prompt},
                 {"role": "user", "content": f"== Execute ==\n{full_prompt}"},
@@ -388,14 +456,15 @@ final_answer 请用 Markdown 组织：标题 ##、列表 -、代码块 ```、加
 
             if self._on_event:
                 self._on_event("worker_done", {"worker": subtask.worker, "phase": subtask.phase, "summary": result[:200]})
-            return subtask.worker, result
+            return subtask.worker, result, []
 
-    async def execute_phased(self, subtasks: list[SubTask]) -> dict[str, str]:
+    async def execute_phased(self, subtasks: list[SubTask]) -> tuple[dict[str, str], dict[str, list[dict]]]:
         """
         分阶段协作执行：
         - 先按 phase 分组
         - 同 phase 并行执行
         - 不同 phase 串行执行，后 phase 看到前序所有输出
+        返回 (all_results, all_agent_steps)
         """
         # 按 phase 分组
         phases: dict[int, list[SubTask]] = {}
@@ -403,6 +472,7 @@ final_answer 请用 Markdown 组织：标题 ##、列表 -、代码块 ```、加
             phases.setdefault(st.phase, []).append(st)
 
         all_results: dict[str, str] = {}
+        all_agent_steps: dict[str, list[dict]] = {}
         sorted_phases = sorted(phases.keys())
 
         if self._on_event:
@@ -438,16 +508,20 @@ final_answer 请用 Markdown 组织：标题 ##、列表 -、代码块 ```、加
             results_list = await asyncio.gather(*tasks, return_exceptions=True)
 
             for i, res in enumerate(results_list):
+                st = phase_tasks[i]
+                key = st.step_id if st.step_id else st.worker
                 if isinstance(res, Exception):
-                    all_results[phase_tasks[i].worker] = f"[执行异常] {res}"
+                    all_results[key] = f"[执行异常] {res}"
                 else:
-                    worker_name, content = res
-                    all_results[worker_name] = content
+                    worker_name, content, agent_steps = res
+                    all_results[key] = content
+                    if agent_steps:
+                        all_agent_steps[key] = agent_steps
 
         if self._on_event:
             self._on_event("phase", {"phase": "execute", "status": "done"})
 
-        return all_results
+        return all_results, all_agent_steps
 
     # ── 归纳总结 ───────────────────────────────────────────────────────
 
@@ -485,7 +559,42 @@ final_answer 请用 Markdown 组织：标题 ##、列表 -、代码块 ```、加
             next_round_focus=data.get("next_round_focus", ""),
         )
 
-    # ── 主编排流程 ─────────────────────────────────────────────────────
+    # ── 工作流转换 ──────────────────────────────────────────────────
+
+    def _workflow_to_subtasks(self, workflow: Workflow) -> list[SubTask]:
+        """将 Plan 生成的 Workflow 转换为 SubTask 列表（兼容现有执行引擎）"""
+        subtasks = []
+        for phase_num in sorted(workflow.phases.keys()):
+            for step in workflow.phases[phase_num]:
+                # depends_on 中的 step_id 需确保在前序阶段
+                subtasks.append(SubTask(
+                    worker=step.worker,
+                    description=f"[预期产出: {step.expected_output}]\n\n{step.description}",
+                    phase=step.phase,
+                    depends_on=step.depends_on,
+                    step_id=step.step_id,
+                ))
+        return subtasks
+
+    @staticmethod
+    def _format_results_for_replan(
+        workflow: Workflow,
+        step_results: dict[str, str],
+    ) -> str:
+        """将执行结果格式化为 Planner 可读的文本，用于重新规划"""
+        parts = [f"工作流分析：{workflow.analysis}\n"]
+        for phase_num in sorted(workflow.phases.keys()):
+            for step in workflow.phases[phase_num]:
+                content = step_results.get(step.step_id, "[未执行]")
+                preview = content[:800] if len(content) > 800 else content
+                parts.append(
+                    f"## Phase {step.phase} [{step.worker}] {step.step_id}\n"
+                    f"预期产出：{step.expected_output}\n"
+                    f"实际产出：{preview}\n"
+                )
+        return "\n".join(parts)
+
+    # ── 主编排流程（规划优先模式） ──────────────────────────────────
 
     async def run(
         self,
@@ -496,164 +605,230 @@ final_answer 请用 Markdown 组织：标题 ##、列表 -、代码块 ```、加
         on_event=None,
     ) -> str:
         """
-        主编排流程：
-          1. Orchestrator 分析任务，按 phase 拆分为子任务
-          2. 分阶段协作执行（同 phase 并行，不同 phase 串行）
-          3. Orchestrator 归纳总结
-          4. 判断是否完成，否则回到步骤1（最多 max_rounds 轮）
+        主编排流程（规划优先模式）：
+          1. Planner AI 分析任务，生成完整工作流
+          2. Workers 按工作流分阶段执行
+          3. Evaluator AI 评估执行质量
+          4. 不合格 → Planner 修正工作流 → 回到步骤 2（最多 max_rounds 次）
+          5. 合格 → 输出最终答案
+
+        与旧版「每轮重新分解」的区别：
+          - 旧：每轮从零分解 → 执行 → 总结 → 重复
+          - 新：一次规划 → 执行 → 评估 → 仅不合格时修正规划
         """
+        self._on_event = on_event
+
+        if not _PLANNER_AVAILABLE:
+            return await self._run_legacy(task, max_rounds, verbose, on_round_complete, on_event)
+
+        planner = WorkflowPlanner(self.client, self.workers)
+        planner.set_event_callback(on_event)
+
+        all_iterations: list[PlanRoundResult] = []
+        previous_results_text = ""
+        previous_issues = ""
+
+        for iteration in range(1, max_rounds + 1):
+            if self._on_event:
+                self._on_event("round_start", {"round": iteration, "mode": "plan_first"})
+            if verbose:
+                self._print_separator()
+                self._print(f"第 {iteration} 轮：规划工作流", bold=True)
+
+            # ── 1. 规划工作流 ──
+            if self._on_event:
+                self._on_event("phase", {"phase": "plan", "status": "start", "round": iteration})
+            if verbose:
+                self._print("Planner 正在设计工作流…")
+
+            try:
+                workflow = await planner.plan(task, previous_results_text, previous_issues)
+            except Exception as e:
+                if self._on_event:
+                    self._on_event("error", {"message": f"工作流规划失败: {e}"})
+                self._print(f"工作流规划失败：{e}", color="red")
+                break
+
+            if verbose:
+                self._print(f"规划分析：{workflow.analysis}")
+                self._print(f"工作流：{len(workflow.phases)} 个阶段，{workflow.total_steps} 个步骤")
+                for phase_num in sorted(workflow.phases.keys()):
+                    steps = workflow.phases[phase_num]
+                    self._print(f"  Phase {phase_num}（{'并行' if len(steps) > 1 else '单任务'}）：")
+                    for st in steps:
+                        self._print(f"    ├─ [{st.step_id}] {st.worker}: {st.description[:80]}…")
+
+            # ── 2. 执行工作流 ──
+            subtasks = self._workflow_to_subtasks(workflow)
+            if not subtasks:
+                if verbose:
+                    self._print("工作流没有步骤，结束", color="yellow")
+                break
+
+            if verbose:
+                self._print(f"\n开始按工作流执行…")
+            results, agent_steps_map = await self.execute_phased(subtasks)
+
+            if verbose:
+                self._print("所有步骤执行完成：")
+                for step_id, content in results.items():
+                    preview = content[:120].replace("\n", " ")
+                    self._print(f"  [{step_id}] {preview}…")
+
+            # ── 3. 评估质量 ──
+            if verbose:
+                self._print(f"\nEvaluator 正在评估执行质量…")
+            evaluation = await planner.evaluate(task, workflow, results)
+
+            if verbose:
+                self._print(f"质量评分：{evaluation.score:.1f}/10 {'✓ 通过' if evaluation.is_satisfactory else '✗ 需修正'}")
+                if evaluation.issues:
+                    for issue in evaluation.issues:
+                        self._print(f"  ⚠ {issue}")
+
+            # ── 4. 记录 ──
+            plan_result = PlanRoundResult(
+                iteration=iteration,
+                workflow=workflow,
+                step_results=results,
+                agent_steps=agent_steps_map,
+                evaluation=evaluation,
+            )
+            all_iterations.append(plan_result)
+
+            if on_round_complete:
+                on_round_complete(iteration, workflow, results, evaluation)
+
+            # ── 5. 判断 ──
+            if evaluation.is_satisfactory:
+                if verbose:
+                    self._print(f"\n任务完成！质量评分 {evaluation.score:.1f}/10", bold=True)
+                final = evaluation.final_answer or self._build_fallback_answer(workflow, results)
+                if self._on_event:
+                    self._on_event("done", {"result": final, "score": evaluation.score})
+                return final
+
+            # ── 6. 准备下一轮修正 ──
+            previous_results_text = self._format_results_for_replan(workflow, results)
+            previous_issues = evaluation.suggestions
+
+            if verbose and iteration < max_rounds:
+                self._print(f"\n评估未通过，Planner 将基于反馈修正工作流…")
+                self._print(f"改进方向：{evaluation.suggestions[:200]}…")
+
+        # ── 所有迭代结束 ──
+        if not all_iterations:
+            msg = "未能完成任何迭代。"
+            if self._on_event:
+                self._on_event("done", {"result": msg})
+            return msg
+
+        # 取最后一次评估的 final_answer，若无则综合
+        last_eval = all_iterations[-1].evaluation
+        if last_eval.final_answer:
+            if self._on_event:
+                self._on_event("done", {"result": last_eval.final_answer})
+            return last_eval.final_answer
+
+        # 超过迭代次数：综合所有结果
+        if verbose:
+            self._print("\n超过最大迭代次数，综合所有结果…")
+        if self._on_event:
+            self._on_event("phase", {"phase": "final_synthesis", "status": "start"})
+
+        last_wf = all_iterations[-1].workflow
+        last_results = all_iterations[-1].step_results
+        fallback = self._build_fallback_answer(last_wf, last_results)
+        if self._on_event:
+            self._on_event("done", {"result": fallback})
+        return fallback
+
+    # ── 旧版兼容 ────────────────────────────────────────────────────
+
+    async def _run_legacy(
+        self, task, max_rounds, verbose, on_round_complete, on_event
+    ) -> str:
+        """旧版轮次循环（Planner 不可用时的降级方案）"""
         self._on_event = on_event
         full_history = f"原始任务：{task}\n\n"
         all_summaries: list[SummaryResult] = []
 
         for round_num in range(1, max_rounds + 1):
             if self._on_event:
-                self._on_event("round_start", {"round": round_num})
+                self._on_event("round_start", {"round": round_num, "mode": "legacy"})
             if verbose:
                 self._print_separator()
-                self._print(f"第 {round_num} 轮开始", bold=True)
+                self._print(f"第 {round_num} 轮开始（旧版模式）", bold=True)
 
-            # ── 1. 分解 ──
-            if self._on_event:
-                self._on_event("phase", {"phase": "decompose", "status": "start", "round": round_num})
-            if verbose:
-                self._print("正在分析并分解任务…")
             try:
                 decomposition = await self.decompose_task(task, history=full_history)
             except Exception as e:
                 if self._on_event:
                     self._on_event("error", {"message": f"任务分解失败: {e}"})
-                self._print(f"任务分解失败：{e}", color="red")
                 break
 
-            # 按 phase 分组统计
             phases_set = sorted(set(st.phase for st in decomposition.subtasks))
-            subtasks_info = [{"worker": st.worker, "description": st.description, "phase": st.phase} for st in decomposition.subtasks]
-
+            subtasks_info = [
+                {"worker": st.worker, "description": st.description, "phase": st.phase}
+                for st in decomposition.subtasks
+            ]
             if self._on_event:
-                self._on_event("phase", {"phase": "decompose", "status": "done", "analysis": decomposition.analysis, "subtasks": subtasks_info, "phases": phases_set})
-
-            if verbose:
-                self._print(f"分析：{decomposition.analysis}")
-                self._print(f"协作方案：{len(phases_set)} 个阶段，{len(decomposition.subtasks)} 个子任务")
-                for phase in phases_set:
-                    phase_tasks = [st for st in decomposition.subtasks if st.phase == phase]
-                    self._print(f"  Phase {phase}（{'并行' if len(phase_tasks) > 1 else '单任务'}）：")
-                    for st in phase_tasks:
-                        self._print(f"    ├─ [{st.worker}] {st.description[:100]}…")
+                self._on_event("phase", {"phase": "decompose", "status": "done",
+                    "analysis": decomposition.analysis, "subtasks": subtasks_info, "phases": phases_set})
 
             if not decomposition.subtasks:
-                if verbose:
-                    self._print("没有分解出子任务，结束循环", color="yellow")
                 break
 
-            # ── 2. 分阶段协作执行 ──
-            if verbose:
-                self._print(f"\n开始分阶段协作执行…")
-            results = await self.execute_phased(decomposition.subtasks)
-
-            if verbose:
-                self._print(f"所有阶段执行完成：")
-                for name, content in results.items():
-                    preview = content[:120].replace("\n", " ")
-                    self._print(f"  [{name}] {preview}…")
-
-            # ── 3. 总结 ──
-            if self._on_event:
-                self._on_event("phase", {"phase": "summarize", "status": "start"})
-            if verbose:
-                self._print(f"\n正在归纳总结…")
-
+            results, agent_steps_map = await self.execute_phased(decomposition.subtasks)
             round_result = RoundResult(
                 round_num=round_num,
                 subtask_results=results,
                 subtask_details=[(st.worker, st.description, st.phase) for st in decomposition.subtasks],
                 phase_count=len(phases_set),
+                agent_steps=agent_steps_map,
             )
             summary = await self.summarize_round(task, round_result)
 
-            if self._on_event:
-                self._on_event("phase", {"phase": "summarize", "status": "done", "summary": summary.summary, "findings": summary.key_findings, "is_final": summary.is_final})
-
-            if verbose:
-                self._print(f"\n第 {round_num} 轮总结：")
-                self._print(f"  {summary.summary[:200]}…")
-
-            # ── 4. 记录 + 回调 ──
             round_text = f"--- 第 {round_num} 轮 ---\n分析：{decomposition.analysis}\n"
             for st in decomposition.subtasks:
                 round_text += f"  - Phase {st.phase}[{st.worker}] {st.description}\n"
-            round_text += f"总结：{summary.summary}\n"
-            round_text += f"关键发现：{'；'.join(summary.key_findings)}\n"
-            round_text += f"是否完成：{'是' if summary.is_final else '否'}\n\n"
+            round_text += f"总结：{summary.summary}\n\n"
             full_history += round_text
             all_summaries.append(summary)
 
             if on_round_complete:
                 on_round_complete(round_num, decomposition, round_result, summary)
             if self._on_event:
-                self._on_event("round_done", {"round": round_num, "is_final": summary.is_final, "summary": summary.summary[:200]})
+                self._on_event("round_done", {"round": round_num, "is_final": summary.is_final})
 
-            # ── 5. 判断 ──
             if summary.is_final:
-                if verbose:
-                    self._print(f"任务已完成！", bold=True)
                 result = summary.final_answer or summary.summary
                 if self._on_event:
                     self._on_event("done", {"result": result})
                 return result
 
-            if round_num < max_rounds and verbose:
-                self._print(f"进入第 {round_num + 1} 轮，焦点：{summary.next_round_focus}")
+        if all_summaries:
+            last = all_summaries[-1]
+            if last.final_answer:
+                if self._on_event:
+                    self._on_event("done", {"result": last.final_answer})
+                return last.final_answer
+        return last.summary if all_summaries else "未能完成任何轮次处理。"
 
-        # ── 所有轮次结束 ──
-        if not all_summaries:
-            msg = "未能完成任何轮次处理。"
-            if self._on_event:
-                self._on_event("done", {"result": msg})
-            return msg
+    # ── 辅助方法 ────────────────────────────────────────────────────
 
-        last = all_summaries[-1]
-        if last.final_answer:
-            if self._on_event:
-                self._on_event("done", {"result": last.final_answer})
-            return last.final_answer
-
-        if verbose:
-            self._print("\n生成最终综合报告…")
-        if self._on_event:
-            self._on_event("phase", {"phase": "final_synthesis", "status": "start"})
-
-        try:
-            final = await self._final_synthesis(task, full_history)
-            if self._on_event:
-                self._on_event("done", {"result": final})
-            return final
-        except Exception:
-            fallback = last.summary
-            if self._on_event:
-                self._on_event("done", {"result": fallback})
-            return fallback
-
-    # ── 最终综合 ────────────────────────────────────────────────────────
-
-    async def _final_synthesis(self, original_task: str, history: str) -> str:
-        messages = [
-            {"role": "system", "content": self.orchestrator_system_prompt},
-            {
-                "role": "user",
-                "content": (
-                    f"所有轮次的协作已经完成。\n\n"
-                    f"原始任务：{original_task}\n\n"
-                    f"执行历史：\n{history}\n\n"
-                    "请输出最终的综合答案。格式：\n"
-                    '{"final_answer": "完整详尽的最终答案（Markdown 格式，结构鲜明）"}'
-                ),
-            },
-        ]
-        response = await self._call_llm(messages)
-        data = _extract_json(response)
-        return data.get("final_answer", response)
+    def _build_fallback_answer(
+        self,
+        workflow: Workflow,
+        step_results: dict[str, str],
+    ) -> str:
+        """当评估未通过但已超过迭代次数时，综合各步骤输出生成最终答案"""
+        parts = [f"# 综合报告\n\n> 工作流分析：{workflow.analysis}\n"]
+        for phase_num in sorted(workflow.phases.keys()):
+            for step in workflow.phases[phase_num]:
+                content = step_results.get(step.step_id, "[未执行]")
+                parts.append(f"\n## {step.worker} — {step.description}\n\n{content}\n")
+        return "\n".join(parts)
 
     # ── 输出工具 ───────────────────────────────────────────────────────
 
